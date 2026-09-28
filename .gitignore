@@ -1,0 +1,32 @@
+﻿# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build and package output
+build/
+dist/
+*.egg-info/
+
+# Generated training and evaluation output
+/plots/
+/models/registry/
+*.onnx
+*.onnx.data
+*.pt
+*.pth
+*.ckpt
+
+# Local settings and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
