@@ -39,13 +39,11 @@ from rl_sdn_controller.sdn_api.routing_table_api import RoutingTableAPI
 from rl_sdn_controller.data_plane.simulator import DataPlaneSimulator
 from rl_sdn_controller.network.routing_engine import RLRoutingEngine, OSPFRoutingEngine, RoundRobinRoutingEngine
 from rl_sdn_controller.network.state_manager import StateManager
-from rl_sdn_controller.cli.visualizer import TerminalVisualizer
 from rl_sdn_controller.cli.live_tui import LiveTelemetryDashboard
 from rl_sdn_controller.sdn_api.stats_provider import LinkStats
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 console = Console()
-viz = TerminalVisualizer()
 
 
 def controller_progress(dashboard: LiveTelemetryDashboard):
@@ -248,7 +246,7 @@ def evaluate_round_robin(chaos: bool, topology_path: str = "configs/topology.yam
 
 def run_full_comparison(episodes: int, chaos: bool, topology_path: str = "configs/topology.yaml"):
     console.print("\n[bold cyan]🚀 RUNNING FULL MULTI-ALGORITHM BENCHMARK...[/bold cyan]")
-    dueling_m, dueling_telem, ctrl = evaluate_rl_agent(use_dueling=True, episodes=episodes, chaos=chaos, save_plots=True, topology_path=topology_path)
+    dueling_m, _, ctrl = evaluate_rl_agent(use_dueling=True, episodes=episodes, chaos=chaos, save_plots=True, topology_path=topology_path)
     standard_m, _, _ = evaluate_rl_agent(use_dueling=False, episodes=episodes, chaos=chaos, topology_path=topology_path)
     ospf_m = evaluate_ospf(chaos=chaos, topology_path=topology_path)
     rr_m = evaluate_round_robin(chaos=chaos, topology_path=topology_path)
@@ -290,8 +288,6 @@ def run_full_comparison(episodes: int, chaos: bool, topology_path: str = "config
     )
 
     console.print(table)
-    if dueling_telem:
-        viz.print_link_telemetry_table(dueling_telem)
 
 
 from rl_sdn_controller.network.dynamic_scenario import generate_random_production_scenario
@@ -566,9 +562,6 @@ def run_custom_train_and_packet_eval(topology_path: str = "configs/topology.yaml
 
     console.print(table)
 
-    if dueling_res.get("telemetry"):
-        viz.print_link_telemetry_table(dueling_res["telemetry"])
-
     # Save diagnostic plots
     dueling_controller.metrics_tracker.set_baselines(ospf_res, rr_res)
     plot_file = dueling_controller.save_dashboard_plots(output_dir="plots", filename=f"eval_{test_packets}_packets.png")
@@ -657,16 +650,12 @@ def main():
         run_hierarchical_demo(episodes=episodes, chaos=chaos)
 
     elif choice == "7":
-        m, telem, _ = evaluate_rl_agent(use_dueling=True, episodes=episodes, chaos=chaos, save_plots=True, topology_path=topology_path)
+        m, _, _ = evaluate_rl_agent(use_dueling=True, episodes=episodes, chaos=chaos, save_plots=True, topology_path=topology_path)
         print_result_table("Dueling DQN", m)
-        if telem:
-            viz.print_link_telemetry_table(telem)
 
     elif choice == "8":
-        m, telem, _ = evaluate_rl_agent(use_dueling=False, episodes=episodes, chaos=chaos, save_plots=True, topology_path=topology_path)
+        m, _, _ = evaluate_rl_agent(use_dueling=False, episodes=episodes, chaos=chaos, save_plots=True, topology_path=topology_path)
         print_result_table("Standard DQN", m)
-        if telem:
-            viz.print_link_telemetry_table(telem)
 
     elif choice == "9":
         m = evaluate_ospf(chaos=chaos, topology_path=topology_path)
