@@ -1,6 +1,6 @@
 import time
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Callable
 import numpy as np
 
 from rl_sdn_controller.ai.env import SDNEnv
@@ -29,7 +29,12 @@ class SDNController:
         self.agent = DQNAgent(self.state_dim, self.action_dim, rl_config.get("agent", {}))
         self.metrics_tracker = MetricsTracker(window_size=rl_config.get("dashboard", {}).get("window_size", 5))
 
-    def train_episodes(self, num_episodes: int = 10, verbose: bool = True) -> List[Dict[str, Any]]:
+    def train_episodes(
+        self,
+        num_episodes: int = 10,
+        verbose: bool = True,
+        progress_callback: Optional[Callable[[int, int, Dict[str, Any], float], None]] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Trains RL Agent over multiple simulation episodes.
         Returns metrics history for each episode.
@@ -69,6 +74,8 @@ class SDNController:
 
                 state = next_state
                 total_reward += reward
+                if progress_callback is not None:
+                    progress_callback(ep, self.env.current_step, info, reward)
 
                 episode_throughput.append(info["total_throughput_mbps"])
                 episode_drops.append(info["avg_drop_pct"])
@@ -123,7 +130,11 @@ class SDNController:
 
         return history
 
-    def evaluate(self, max_steps: int = 600) -> Tuple[Dict[str, float], Dict[Any, Any]]:
+    def evaluate(
+        self,
+        max_steps: int = 600,
+        progress_callback: Optional[Callable[[int, int, Dict[str, Any], float], None]] = None,
+    ) -> Tuple[Dict[str, float], Dict[Any, Any]]:
         """Evaluates current policy in deterministic mode."""
         self.env.max_steps = max_steps
         state, _ = self.env.reset()
@@ -135,6 +146,8 @@ class SDNController:
             action = self.agent.select_action(state, evaluate=True)
             state, reward, terminated, truncated, info = self.env.step(action)
             done = terminated or truncated
+            if progress_callback is not None:
+                progress_callback(1, self.env.current_step, info, reward)
             tp_list.append(info["total_throughput_mbps"])
             drop_list.append(info["avg_drop_pct"])
             lat_list.append(info["avg_latency_ms"])

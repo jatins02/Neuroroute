@@ -130,6 +130,7 @@ class SDNEnv(gym.Env):
 
         info = {
             "step": self.current_step,
+            "sim_time_sec": self.simulator.current_time,
             "total_throughput_mbps": total_tx_mbps,
             "avg_drop_pct": overall_drop_pct,
             "avg_latency_ms": avg_lat_ms,

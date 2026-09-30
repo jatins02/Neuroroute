@@ -40,11 +40,40 @@ from rl_sdn_controller.data_plane.simulator import DataPlaneSimulator
 from rl_sdn_controller.network.routing_engine import RLRoutingEngine, OSPFRoutingEngine, RoundRobinRoutingEngine
 from rl_sdn_controller.network.state_manager import StateManager
 from rl_sdn_controller.cli.visualizer import TerminalVisualizer
+from rl_sdn_controller.cli.live_tui import LiveTelemetryDashboard
 from rl_sdn_controller.sdn_api.stats_provider import LinkStats
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 console = Console()
 viz = TerminalVisualizer()
+
+
+def controller_progress(dashboard: LiveTelemetryDashboard):
+    # Adapt controller step telemetry to the live dashboard.
+    def update(episode: int, step: int, info: Dict[str, Any], reward: float):
+        dashboard.update(
+            info["telemetry"],
+            sim_time_sec=info["sim_time_sec"],
+            episode=episode,
+            step=step,
+            throughput_mbps=info["total_throughput_mbps"],
+            drop_rate_pct=info["avg_drop_pct"],
+            avg_latency_ms=info["avg_latency_ms"],
+            reward=reward,
+        )
+    return update
+
+
+def print_result_table(policy: str, metrics: Dict[str, float]) -> None:
+    table = Table(title=f"FINAL SIMULATION RESULTS - {policy}", border_style="bright_blue")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Result", justify="right", style="bold white")
+    table.add_row("Link throughput", f"{metrics['throughput_mbps']:.2f} Mb/s")
+    table.add_row("Packet drop rate", f"{metrics['drop_rate_pct']:.2f}%")
+    table.add_row("Mean link latency", f"{metrics['avg_latency_ms']:.2f} ms")
+    table.add_row("P99 of window mean latency", f"{metrics['p99_latency_ms']:.2f} ms")
+    console.print(table)
+
 
 
 
@@ -55,8 +84,8 @@ def packet_weighted_latency(telem):
     return total_lat_w / total_pkt if total_pkt > 0 else 0.0
 
 
-def load_configs(chaos_enabled: bool = True):
-    top_path = "configs/topology.yaml"
+def load_configs(chaos_enabled: bool = True, topology_path: str = "configs/topology.yaml"):
+    top_path = topology_path
     traffic_path = "configs/traffic_profiles.yaml"
     rl_path = "configs/rl_config.yaml"
     chaos_path = "configs/chaos_config.yaml" if chaos_enabled else None
@@ -108,22 +137,24 @@ def aggregate_telemetry(history):
     return aggregated
 
 
-def evaluate_rl_agent(use_dueling: bool, episodes: int, chaos: bool, save_plots: bool = False):
-    top_path, traffic_configs, rl_config, chaos_config = load_configs(chaos)
+def evaluate_rl_agent(use_dueling: bool, episodes: int, chaos: bool, save_plots: bool = False, topology_path: str = "configs/topology.yaml"):
+    top_path, traffic_configs, rl_config, chaos_config = load_configs(chaos, topology_path)
     model_config = copy.deepcopy(rl_config)
     model_config["agent"]["use_dueling"] = use_dueling
 
     model_name = "Dueling DQN" if use_dueling else "Standard DQN"
     console.print(f"\n[bold green]⚙️  Training {model_name} for {episodes} episodes...[/bold green]")
     controller = SDNController(top_path, traffic_configs, model_config, chaos_config=chaos_config)
-    controller.train_episodes(num_episodes=episodes, verbose=False)
+    with LiveTelemetryDashboard(console) as dashboard:
+        dashboard.set_phase("Training", model_name, total_episodes=episodes, total_steps=controller.env.max_steps)
+        controller.train_episodes(num_episodes=episodes, verbose=False, progress_callback=controller_progress(dashboard))
+        dashboard.set_phase("Policy evaluation", model_name, total_episodes=1, total_steps=600)
+        metrics, last_telem = controller.evaluate(max_steps=600, progress_callback=controller_progress(dashboard))
 
-    console.print(f"[bold green]📊 Evaluating {model_name} policy...[/bold green]")
-    metrics, last_telem = controller.evaluate(max_steps=600)
-
+    console.print(f"[bold green]📊 Finished evaluating {model_name} policy.[/bold green]")
     if save_plots:
-        ospf_m = evaluate_ospf(chaos=chaos)
-        rr_m = evaluate_round_robin(chaos=chaos)
+        ospf_m = evaluate_ospf(chaos=chaos, topology_path=topology_path)
+        rr_m = evaluate_round_robin(chaos=chaos, topology_path=topology_path)
         controller.metrics_tracker.set_baselines(ospf_m, rr_m)
         plot_path = controller.save_dashboard_plots(output_dir="plots", filename=f"{model_name.lower().replace(' ', '_')}_dashboard.png")
         console.print(f"[bold green]📈 Diagnostic plot saved to: {plot_path}[/bold green]")
@@ -131,8 +162,8 @@ def evaluate_rl_agent(use_dueling: bool, episodes: int, chaos: bool, save_plots:
     return metrics, last_telem, controller
 
 
-def evaluate_ospf(chaos: bool):
-    top_path, traffic_configs, rl_config, chaos_config = load_configs(chaos)
+def evaluate_ospf(chaos: bool, topology_path: str = "configs/topology.yaml"):
+    top_path, traffic_configs, rl_config, chaos_config = load_configs(chaos, topology_path)
     topo = NetworkTopology(top_path)
     rt_api = RoutingTableAPI()
     sim = DataPlaneSimulator(topo, rt_api, traffic_configs, chaos_config=chaos_config)
@@ -141,18 +172,28 @@ def evaluate_ospf(chaos: bool):
     engine.update_routes(flow_ids, sim.flow_src_dst)
 
     tp_list, drop_list, lat_list = [], [], []
-    for _ in range(600):
-        for lq in sim.links.values():
-            lq.reset_window_stats()
-        for _ in range(10):
-            sim.step(0.01)
-        telem = sim.stats_provider.collect_window_telemetry(0.1)
-        tp = sum((st.tx_bytes * 8.0 / 1_000_000.0) / 0.1 for st in telem.values())
-        dr = float(np.mean([st.drop_rate_pct for st in telem.values()])) if telem else 0.0
-        lat = packet_weighted_latency(telem)
-        tp_list.append(tp)
-        drop_list.append(dr)
-        lat_list.append(lat)
+    with LiveTelemetryDashboard(console) as dashboard:
+        dashboard.set_phase("Simulation", "Static OSPF", total_steps=600)
+        for step in range(600):
+            for lq in sim.links.values():
+                lq.reset_window_stats()
+            for _ in range(10):
+                sim.step(0.01)
+            telem = sim.stats_provider.collect_window_telemetry(0.1)
+            tp = sum((st.tx_bytes * 8.0 / 1_000_000.0) / 0.1 for st in telem.values())
+            dr = float(np.mean([st.drop_rate_pct for st in telem.values()])) if telem else 0.0
+            lat = packet_weighted_latency(telem)
+            tp_list.append(tp)
+            drop_list.append(dr)
+            lat_list.append(lat)
+            dashboard.update(
+                telem,
+                sim_time_sec=sim.current_time,
+                step=step + 1,
+                throughput_mbps=tp,
+                drop_rate_pct=dr,
+                avg_latency_ms=lat,
+            )
 
     valid_lat = [l for l in lat_list if not np.isnan(l) and l > 0]
     return {
@@ -163,8 +204,8 @@ def evaluate_ospf(chaos: bool):
     }
 
 
-def evaluate_round_robin(chaos: bool):
-    top_path, traffic_configs, rl_config, chaos_config = load_configs(chaos)
+def evaluate_round_robin(chaos: bool, topology_path: str = "configs/topology.yaml"):
+    top_path, traffic_configs, rl_config, chaos_config = load_configs(chaos, topology_path)
     topo = NetworkTopology(top_path)
     rt_api = RoutingTableAPI()
     sim = DataPlaneSimulator(topo, rt_api, traffic_configs, chaos_config=chaos_config)
@@ -172,19 +213,29 @@ def evaluate_round_robin(chaos: bool):
     engine = RoundRobinRoutingEngine(topo, rt_api)
 
     tp_list, drop_list, lat_list = [], [], []
-    for _ in range(600):
-        engine.update_routes(flow_ids, sim.flow_src_dst)
-        for lq in sim.links.values():
-            lq.reset_window_stats()
-        for _ in range(10):
-            sim.step(0.01)
-        telem = sim.stats_provider.collect_window_telemetry(0.1)
-        tp = sum((st.tx_bytes * 8.0 / 1_000_000.0) / 0.1 for st in telem.values())
-        dr = float(np.mean([st.drop_rate_pct for st in telem.values()])) if telem else 0.0
-        lat = packet_weighted_latency(telem)
-        tp_list.append(tp)
-        drop_list.append(dr)
-        lat_list.append(lat)
+    with LiveTelemetryDashboard(console) as dashboard:
+        dashboard.set_phase("Simulation", "Round Robin", total_steps=600)
+        for step in range(600):
+            engine.update_routes(flow_ids, sim.flow_src_dst)
+            for lq in sim.links.values():
+                lq.reset_window_stats()
+            for _ in range(10):
+                sim.step(0.01)
+            telem = sim.stats_provider.collect_window_telemetry(0.1)
+            tp = sum((st.tx_bytes * 8.0 / 1_000_000.0) / 0.1 for st in telem.values())
+            dr = float(np.mean([st.drop_rate_pct for st in telem.values()])) if telem else 0.0
+            lat = packet_weighted_latency(telem)
+            tp_list.append(tp)
+            drop_list.append(dr)
+            lat_list.append(lat)
+            dashboard.update(
+                telem,
+                sim_time_sec=sim.current_time,
+                step=step + 1,
+                throughput_mbps=tp,
+                drop_rate_pct=dr,
+                avg_latency_ms=lat,
+            )
 
     valid_lat = [l for l in lat_list if not np.isnan(l) and l > 0]
     return {
@@ -195,12 +246,12 @@ def evaluate_round_robin(chaos: bool):
     }
 
 
-def run_full_comparison(episodes: int, chaos: bool):
+def run_full_comparison(episodes: int, chaos: bool, topology_path: str = "configs/topology.yaml"):
     console.print("\n[bold cyan]🚀 RUNNING FULL MULTI-ALGORITHM BENCHMARK...[/bold cyan]")
-    dueling_m, dueling_telem, ctrl = evaluate_rl_agent(use_dueling=True, episodes=episodes, chaos=chaos, save_plots=True)
-    standard_m, _, _ = evaluate_rl_agent(use_dueling=False, episodes=episodes, chaos=chaos)
-    ospf_m = evaluate_ospf(chaos=chaos)
-    rr_m = evaluate_round_robin(chaos=chaos)
+    dueling_m, dueling_telem, ctrl = evaluate_rl_agent(use_dueling=True, episodes=episodes, chaos=chaos, save_plots=True, topology_path=topology_path)
+    standard_m, _, _ = evaluate_rl_agent(use_dueling=False, episodes=episodes, chaos=chaos, topology_path=topology_path)
+    ospf_m = evaluate_ospf(chaos=chaos, topology_path=topology_path)
+    rr_m = evaluate_round_robin(chaos=chaos, topology_path=topology_path)
 
     table = Table(title=f"📊 BENCHMARK COMPARISON ({'CHAOS ACTIVE' if chaos else 'NORMAL NETWORK'})")
     table.add_column("Metric", style="bold yellow")
@@ -231,7 +282,7 @@ def run_full_comparison(episodes: int, chaos: bool):
         f"{rr_m['avg_latency_ms']:.2f} ms"
     )
     table.add_row(
-        "Tail Latency P99 (ms)",
+        "P99 of window mean latency (ms)",
         f"{dueling_m['p99_latency_ms']:.2f} ms",
         f"{standard_m['p99_latency_ms']:.2f} ms",
         f"{ospf_m['p99_latency_ms']:.2f} ms",
@@ -251,18 +302,28 @@ def evaluate_model_on_packets(
     trained_controller: Optional[SDNController],
     target_packets: int,
     chaos: bool,
-    custom_scenario: Optional[Tuple[NetworkTopology, List[Dict[str, Any]], Dict[str, Any]]] = None
+    custom_scenario: Optional[Tuple[NetworkTopology, List[Dict[str, Any]], Dict[str, Any]]] = None,
+    topology_path: str = "configs/topology.yaml",
+    dashboard: Optional[LiveTelemetryDashboard] = None,
 ) -> Dict[str, Any]:
     """
     Evaluates a specific model (Dueling DQN, Standard DQN, OSPF, or Round-Robin)
     on an exact target number of packets under a specific or randomized network scenario.
     """
+    if dashboard is None:
+        with LiveTelemetryDashboard(console) as live_dashboard:
+            return evaluate_model_on_packets(
+                model_type, trained_controller, target_packets, chaos,
+                custom_scenario=custom_scenario, topology_path=topology_path,
+                dashboard=live_dashboard,
+            )
+
     if custom_scenario is not None:
         topo, traffic_configs, chaos_config = custom_scenario
         if not chaos:
             chaos_config = None
     else:
-        top_path, traffic_configs, rl_config, chaos_config = load_configs(chaos)
+        top_path, traffic_configs, rl_config, chaos_config = load_configs(chaos, topology_path)
         topo = NetworkTopology(top_path)
 
     rt_api = RoutingTableAPI()
@@ -286,6 +347,7 @@ def evaluate_model_on_packets(
     e2e_latencies_ms = []   # True end-to-end latency per delivered packet
 
     sim.reset()
+    dashboard.set_phase("Packet evaluation", model_type.replace("_", " ").title())
     if model_type == "ospf":
         engine.update_routes(flow_ids, sim.flow_src_dst)
     elif model_type in ["dueling_dqn", "standard_dqn"]:
@@ -329,6 +391,20 @@ def evaluate_model_on_packets(
         total_drop_pkts += sim.step_dropped_packets
 
         last_telem = step_telem
+        step_tx_mbps = sum(st.tx_bytes * 8.0 / 1_000_000.0 / step_dt for st in step_telem.values())
+        step_tx = sum(st.tx_packets for st in step_telem.values())
+        step_drop = sum(st.dropped_packets for st in step_telem.values())
+        step_drop_pct = (step_drop / (step_tx + step_drop) * 100.0) if step_tx + step_drop else 0.0
+        dashboard.update(
+            step_telem,
+            sim_time_sec=sim.current_time,
+            step=round(sim.current_time / step_dt),
+            throughput_mbps=step_tx_mbps,
+            drop_rate_pct=step_drop_pct,
+            avg_latency_ms=packet_weighted_latency(step_telem),
+            delivered_packets=total_tx_pkts,
+            dropped_packets=total_drop_pkts,
+        )
 
     total_arrived = total_tx_pkts + total_drop_pkts
     drop_pct = (total_drop_pkts / total_arrived * 100.0) if total_arrived > 0 else 0.0
@@ -352,7 +428,7 @@ def evaluate_model_on_packets(
 
 
 
-def run_custom_train_and_packet_eval():
+def run_custom_train_and_packet_eval(topology_path: str = "configs/topology.yaml"):
     console.print("\n[bold cyan]🎯 CUSTOM WORKFLOW: TRAIN ON N CYCLES ➔ EVALUATE ON M PACKETS[/bold cyan]\n")
     
     # 1. Manually select train cycles
@@ -367,7 +443,8 @@ def run_custom_train_and_packet_eval():
     chaos = Confirm.ask("Enable Network Chaos Engine (flapping links, BER drops, delay jitter)?", default=True)
 
     # 4. Randomized Real-World Scenario toggle
-    random_scenario = Confirm.ask("Generate Randomized Real-World Production Scenario (asymmetric link capacities & mixed traffic)?", default=True)
+    random_scenario = (topology_path == "configs/topology.yaml" and
+                       Confirm.ask("Generate Randomized Real-World Production Scenario (asymmetric link capacities & mixed traffic)?", default=False))
 
     # Generate or load scenario
     if random_scenario:
@@ -378,7 +455,7 @@ def run_custom_train_and_packet_eval():
 
     # Phase 1: Training Dueling DQN
     console.print(f"\n[bold green]🏋️ [PHASE 1] Training Proposed Dueling DQN for {train_cycles} cycles...[/bold green]")
-    top_path, traffic_configs, rl_config, chaos_config = load_configs(chaos)
+    top_path, traffic_configs, rl_config, chaos_config = load_configs(chaos, topology_path)
     dueling_cfg = copy.deepcopy(rl_config)
     dueling_cfg["agent"]["use_dueling"] = True
     
@@ -395,7 +472,12 @@ def run_custom_train_and_packet_eval():
     else:
         dueling_controller = SDNController(top_path, traffic_configs, dueling_cfg, chaos_config=chaos_config)
 
-    dueling_controller.train_episodes(num_episodes=train_cycles, verbose=True)
+    with LiveTelemetryDashboard(console) as dashboard:
+        dashboard.set_phase("Training", "Dueling DQN", total_episodes=train_cycles, total_steps=dueling_controller.env.max_steps)
+        dueling_controller.train_episodes(
+            num_episodes=train_cycles, verbose=False,
+            progress_callback=controller_progress(dashboard),
+        )
 
     # Train Standard DQN
     console.print(f"\n[bold green]🏋️ Training Baseline Standard DQN for {train_cycles} cycles...[/bold green]")
@@ -405,7 +487,12 @@ def run_custom_train_and_packet_eval():
         std_controller = SDNController(temp_top_path, flows, std_cfg, chaos_config=ch_cfg if chaos else None)
     else:
         std_controller = SDNController(top_path, traffic_configs, std_cfg, chaos_config=chaos_config)
-    std_controller.train_episodes(num_episodes=train_cycles, verbose=False)
+    with LiveTelemetryDashboard(console) as dashboard:
+        dashboard.set_phase("Training", "Standard DQN", total_episodes=train_cycles, total_steps=std_controller.env.max_steps)
+        std_controller.train_episodes(
+            num_episodes=train_cycles, verbose=False,
+            progress_callback=controller_progress(dashboard),
+        )
 
     # Clean up temp file if needed
     if scenario_tuple and os.path.exists(temp_top_path):
@@ -413,10 +500,10 @@ def run_custom_train_and_packet_eval():
 
     # Phase 2: Evaluation on exact M packets
     console.print(f"\n[bold cyan]🧪 [PHASE 2] Evaluating all 4 models on {test_packets:,} test packets...[/bold cyan]")
-    dueling_res = evaluate_model_on_packets("dueling_dqn", dueling_controller, test_packets, chaos, custom_scenario=scenario_tuple)
-    std_res = evaluate_model_on_packets("standard_dqn", std_controller, test_packets, chaos, custom_scenario=scenario_tuple)
-    ospf_res = evaluate_model_on_packets("ospf", None, test_packets, chaos, custom_scenario=scenario_tuple)
-    rr_res = evaluate_model_on_packets("round_robin", None, test_packets, chaos, custom_scenario=scenario_tuple)
+    dueling_res = evaluate_model_on_packets("dueling_dqn", dueling_controller, test_packets, chaos, custom_scenario=scenario_tuple, topology_path=topology_path)
+    std_res = evaluate_model_on_packets("standard_dqn", std_controller, test_packets, chaos, custom_scenario=scenario_tuple, topology_path=topology_path)
+    ospf_res = evaluate_model_on_packets("ospf", None, test_packets, chaos, custom_scenario=scenario_tuple, topology_path=topology_path)
+    rr_res = evaluate_model_on_packets("round_robin", None, test_packets, chaos, custom_scenario=scenario_tuple, topology_path=topology_path)
 
 
     # Phase 3: Display Comparison Results
@@ -488,6 +575,24 @@ def run_custom_train_and_packet_eval():
     console.print(f"\n[bold green]📈 Performance diagnostic plots saved to: [underline]{plot_file}[/underline][/bold green]")
 
 
+TOPOLOGY_CHOICES = {
+    "1": ("4 routers (default)", "configs/topology.yaml"),
+    "2": ("8 routers (medium)", "configs/topology_8.yaml"),
+    "3": ("14 routers (extended)", "configs/topology_14.yaml"),
+    "4": ("22 routers (large)", "configs/topology_22.yaml"),
+}
+
+
+def choose_topology():
+    console.print("\n[bold yellow]Select Network Topology:[/bold yellow]")
+    for number, (label, _) in TOPOLOGY_CHOICES.items():
+        console.print(f"  [{number}] {label}")
+    selection = Prompt.ask("Choose topology", choices=list(TOPOLOGY_CHOICES), default="1")
+    label, path = TOPOLOGY_CHOICES[selection]
+    console.print(f"[green]Using {label}[/green]")
+    return path
+
+
 def main():
     os.system("clear" if os.name == "posix" else "cls")
     
@@ -518,13 +623,15 @@ def main():
         console.print("[yellow]Exiting RL-SDN TUI. Goodbye![/yellow]")
         return
 
-    if choice == "1":
-        run_custom_train_and_packet_eval()
-        return
-
     if choice == "12":
         console.print("\n[bold cyan]🧪 Running Automated Test Suite...[/bold cyan]\n")
         pytest.main(["tests/", "-v"])
+        return
+
+    topology_path = choose_topology()
+
+    if choice == "1":
+        run_custom_train_and_packet_eval(topology_path=topology_path)
         return
 
     if choice == "4":
@@ -544,36 +651,41 @@ def main():
     episodes = int(episodes_str)
 
     if choice == "2":
-        run_full_comparison(episodes=episodes, chaos=chaos)
+        run_full_comparison(episodes=episodes, chaos=chaos, topology_path=topology_path)
 
     elif choice == "3":
         run_hierarchical_demo(episodes=episodes, chaos=chaos)
 
     elif choice == "7":
-        m, telem, _ = evaluate_rl_agent(use_dueling=True, episodes=episodes, chaos=chaos, save_plots=True)
-        viz.print_benchmark_table(m, {"throughput_mbps": 0, "drop_rate_pct": 0, "avg_latency_ms": 0, "p99_latency_ms": 0}, {"throughput_mbps": 0, "drop_rate_pct": 0, "avg_latency_ms": 0, "p99_latency_ms": 0})
+        m, telem, _ = evaluate_rl_agent(use_dueling=True, episodes=episodes, chaos=chaos, save_plots=True, topology_path=topology_path)
+        print_result_table("Dueling DQN", m)
         if telem:
             viz.print_link_telemetry_table(telem)
 
     elif choice == "8":
-        m, telem, _ = evaluate_rl_agent(use_dueling=False, episodes=episodes, chaos=chaos, save_plots=True)
-        viz.print_benchmark_table(m, {"throughput_mbps": 0, "drop_rate_pct": 0, "avg_latency_ms": 0, "p99_latency_ms": 0}, {"throughput_mbps": 0, "drop_rate_pct": 0, "avg_latency_ms": 0, "p99_latency_ms": 0})
+        m, telem, _ = evaluate_rl_agent(use_dueling=False, episodes=episodes, chaos=chaos, save_plots=True, topology_path=topology_path)
+        print_result_table("Standard DQN", m)
         if telem:
             viz.print_link_telemetry_table(telem)
 
     elif choice == "9":
-        m = evaluate_ospf(chaos=chaos)
-        viz.print_benchmark_table({"throughput_mbps": 0, "drop_rate_pct": 0, "avg_latency_ms": 0, "p99_latency_ms": 0}, m, {"throughput_mbps": 0, "drop_rate_pct": 0, "avg_latency_ms": 0, "p99_latency_ms": 0})
+        m = evaluate_ospf(chaos=chaos, topology_path=topology_path)
+        print_result_table("Static OSPF", m)
 
     elif choice == "10":
-        m = evaluate_round_robin(chaos=chaos)
-        viz.print_benchmark_table({"throughput_mbps": 0, "drop_rate_pct": 0, "avg_latency_ms": 0, "p99_latency_ms": 0}, {"throughput_mbps": 0, "drop_rate_pct": 0, "avg_latency_ms": 0, "p99_latency_ms": 0}, m)
+        m = evaluate_round_robin(chaos=chaos, topology_path=topology_path)
+        print_result_table("Round Robin", m)
 
     elif choice == "11":
         onnx_file = Prompt.ask("Enter output ONNX filename", default="model.onnx")
-        top_path, traffic_configs, rl_config, chaos_config = load_configs(chaos)
+        top_path, traffic_configs, rl_config, chaos_config = load_configs(chaos, topology_path)
         controller = SDNController(top_path, traffic_configs, rl_config, chaos_config=chaos_config)
-        controller.train_episodes(num_episodes=episodes, verbose=True)
+        with LiveTelemetryDashboard(console) as dashboard:
+            dashboard.set_phase("Training", "Dueling DQN", total_episodes=episodes, total_steps=controller.env.max_steps)
+            controller.train_episodes(
+                num_episodes=episodes, verbose=False,
+                progress_callback=controller_progress(dashboard),
+            )
         from rl_sdn_controller.ai.policy_exporter import export_policy_to_onnx
         export_policy_to_onnx(controller.agent.policy_net, controller.state_dim, onnx_file)
         console.print(f"[bold green]✅ Model exported to {onnx_file}[/bold green]")
