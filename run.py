@@ -39,6 +39,7 @@ from rl_sdn_controller.ai.distillation import PolicyDistiller
 from rl_sdn_controller.ai.env import SDNEnv
 from rl_sdn_controller.ai.tabular_q_learning import TabularQLearningAgent
 from rl_sdn_controller.network.topology import NetworkTopology
+from rl_sdn_controller.network.topology_factory import build_router_topology, MIN_ROUTERS, MAX_ROUTERS
 from rl_sdn_controller.sdn_api.routing_table_api import RoutingTableAPI
 from rl_sdn_controller.data_plane.simulator import DataPlaneSimulator
 from rl_sdn_controller.network.routing_engine import RLRoutingEngine, OSPFRoutingEngine, RoundRobinRoutingEngine
@@ -653,22 +654,30 @@ def run_custom_train_and_packet_eval(topology_path: str = "configs/topology.yaml
     console.print(f"\n[bold green]Performance diagnostic plots saved to: [underline]{plot_file}[/underline][/bold green]")
 
 
-TOPOLOGY_CHOICES = {
-    "1": ("4 routers (default)", "configs/topology.yaml"),
-    "2": ("8 routers (medium)", "configs/topology_8.yaml"),
-    "3": ("14 routers (extended)", "configs/topology_14.yaml"),
-    "4": ("22 routers (large)", "configs/topology_22.yaml"),
+TOPOLOGY_PRESETS = {
+    4: "configs/topology.yaml",
+    8: "configs/topology_8.yaml",
+    14: "configs/topology_14.yaml",
+    22: "configs/topology_22.yaml",
 }
 
 
 def choose_topology():
-    console.print("\n[bold yellow]Select Network Topology:[/bold yellow]")
-    for number, (label, _) in TOPOLOGY_CHOICES.items():
-        console.print(f"  [{number}] {label}")
-    selection = Prompt.ask("Choose topology", choices=list(TOPOLOGY_CHOICES), default="1")
-    label, path = TOPOLOGY_CHOICES[selection]
-    console.print(f"[green]Using {label}[/green]")
-    return path
+    while True:
+        raw_count = Prompt.ask("Router count", default="4")
+        try:
+            router_count = int(raw_count)
+        except ValueError:
+            router_count = None
+        if router_count is not None and MIN_ROUTERS <= router_count <= MAX_ROUTERS:
+            break
+        console.print(f"[red]Enter a whole number between {MIN_ROUTERS} and {MAX_ROUTERS}.[/red]")
+
+    topology = TOPOLOGY_PRESETS.get(router_count)
+    if topology is None:
+        topology = yaml.safe_dump(build_router_topology(router_count), sort_keys=False)
+    console.print(f"[green]Using {router_count}-router topology[/green]")
+    return topology
 
 
 def main():

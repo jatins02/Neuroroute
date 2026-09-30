@@ -58,7 +58,7 @@ $env:MPLCONFIGDIR=(Join-Path (Get-Location) '.venv\matplotlib')
 
 The main `requirements.txt` includes CUDA packages that are unavailable on Windows. The Windows file installs the CPU version of PyTorch and all packages needed by the app and tests.
 
-When `run.py` starts, choose a simulation mode and then select the 4-router (default), 8-router, 14-router, or 22-router topology. The topology choice is used for training and evaluation in that run. In the custom workflow, the optional randomized production scenario is available only with the default 4-router choice.
+When `run.py` starts, choose a simulation mode and optionally enter a router count (4–64). Press Enter to use the default 4-router topology. The selected topology is used for training and evaluation in that run. The existing 8-, 14-, and 22-router configurations remain available by entering those counts; other counts generate a connected topology. In the custom workflow, the optional randomized production scenario is available only with the default 4-router choice.
 
 ### 1. Interactive Terminal User Interface (TUI)
 ```bash

@@ -1,5 +1,6 @@
 import pytest
 from rl_sdn_controller.network.topology import NetworkTopology
+from rl_sdn_controller.network.topology_factory import build_router_topology
 from rl_sdn_controller.sdn_api.routing_table_api import RoutingTableAPI
 from rl_sdn_controller.network.routing_engine import OSPFRoutingEngine, RoundRobinRoutingEngine, RLRoutingEngine
 
@@ -67,3 +68,16 @@ links:
     path2 = rt_api.get_flow_path("f1")
 
     assert path1 != path2
+
+
+@pytest.mark.parametrize("router_count", [5, 9, 23])
+def test_generated_topology_routes_all_routers_both_directions(router_count):
+    topo = NetworkTopology(build_router_topology(router_count))
+    forward = topo.get_candidate_paths("h1", "h2")
+    reverse = topo.get_candidate_paths("h2", "h1")
+
+    assert len(topo.get_routers()) == router_count
+    assert len(forward) == len(reverse) == 3
+    assert {router for path in forward for router in path if router.startswith("r")} == set(topo.get_routers())
+    assert all(path[0] == "h1" and path[-1] == "h2" for path in forward)
+    assert all(path[0] == "h2" and path[-1] == "h1" for path in reverse)
