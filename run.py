@@ -15,6 +15,7 @@ Production-grade dashboard and execution environment supporting all 10 architect
 """
 import sys
 import os
+import tempfile
 import copy
 import yaml
 import logging
@@ -144,7 +145,7 @@ def evaluate_rl_agent(use_dueling: bool, episodes: int, chaos: bool, save_plots:
     model_config["agent"]["use_dueling"] = use_dueling
 
     model_name = "Dueling DQN" if use_dueling else "Standard DQN"
-    console.print(f"\n[bold green]⚙️  Training {model_name} for {episodes} episodes...[/bold green]")
+    console.print(f"\n[bold green]Training {model_name} for {episodes} episodes...[/bold green]")
     controller = SDNController(top_path, traffic_configs, model_config, chaos_config=chaos_config)
     with LiveTelemetryDashboard(console) as dashboard:
         dashboard.set_phase("Training", model_name, total_episodes=episodes, total_steps=controller.env.max_steps)
@@ -152,13 +153,13 @@ def evaluate_rl_agent(use_dueling: bool, episodes: int, chaos: bool, save_plots:
         dashboard.set_phase("Policy evaluation", model_name, total_episodes=1, total_steps=600)
         metrics, last_telem = controller.evaluate(max_steps=600, progress_callback=controller_progress(dashboard))
 
-    console.print(f"[bold green]📊 Finished evaluating {model_name} policy.[/bold green]")
+    console.print(f"[bold green]Finished evaluating {model_name} policy.[/bold green]")
     if save_plots:
         ospf_m = evaluate_ospf(chaos=chaos, topology_path=topology_path)
         rr_m = evaluate_round_robin(chaos=chaos, topology_path=topology_path)
         controller.metrics_tracker.set_baselines(ospf_m, rr_m)
         plot_path = controller.save_dashboard_plots(output_dir="plots", filename=f"{model_name.lower().replace(' ', '_')}_dashboard.png")
-        console.print(f"[bold green]📈 Diagnostic plot saved to: {plot_path}[/bold green]")
+        console.print(f"[bold green]Diagnostic plot saved to: {plot_path}[/bold green]")
 
     return metrics, last_telem, controller
 
@@ -295,13 +296,13 @@ def evaluate_q_learning(episodes: int, chaos: bool, topology_path: str = "config
 
 
 def run_full_comparison(episodes: int, chaos: bool, topology_path: str = "configs/topology.yaml"):
-    console.print("\n[bold cyan]🚀 RUNNING FULL MULTI-ALGORITHM BENCHMARK...[/bold cyan]")
+    console.print("\n[bold cyan]RUNNING FULL MULTI-ALGORITHM BENCHMARK...[/bold cyan]")
     dueling_m, _, ctrl = evaluate_rl_agent(use_dueling=True, episodes=episodes, chaos=chaos, save_plots=False, topology_path=topology_path)
     standard_m, _, _ = evaluate_rl_agent(use_dueling=False, episodes=episodes, chaos=chaos, topology_path=topology_path)
     ospf_m = evaluate_ospf(chaos=chaos, topology_path=topology_path)
     q_m = evaluate_q_learning(episodes=episodes, chaos=chaos, topology_path=topology_path)
 
-    table = Table(title=f"📊 BENCHMARK COMPARISON ({'CHAOS ACTIVE' if chaos else 'NORMAL NETWORK'})")
+    table = Table(title=f"BENCHMARK COMPARISON ({'CHAOS ACTIVE' if chaos else 'NORMAL NETWORK'})")
     table.add_column("Metric", style="bold yellow")
     table.add_column("Dueling DQN (Proposed)", style="bold green")
     table.add_column("Standard DQN", style="bold cyan")
@@ -478,7 +479,7 @@ def evaluate_model_on_packets(
 
 
 def run_custom_train_and_packet_eval(topology_path: str = "configs/topology.yaml"):
-    console.print("\n[bold cyan]🎯 CUSTOM WORKFLOW: TRAIN ON N CYCLES ➔ EVALUATE ON M PACKETS[/bold cyan]\n")
+    console.print("\n[bold cyan]CUSTOM WORKFLOW: TRAIN ON N CYCLES -> EVALUATE ON M PACKETS[/bold cyan]\n")
     
     # 1. Manually select train cycles
     train_cycles_str = Prompt.ask("Enter number of training cycles (episodes)", default="20")
@@ -498,12 +499,12 @@ def run_custom_train_and_packet_eval(topology_path: str = "configs/topology.yaml
     # Generate or load scenario
     if random_scenario:
         scenario_tuple = generate_random_production_scenario()
-        console.print("[dim italic]🎲 Generated fresh randomized real-world production topology & traffic mix.[/dim italic]")
+        console.print("[dim italic]Generated fresh randomized real-world production topology & traffic mix.[/dim italic]")
     else:
         scenario_tuple = None
 
     # Phase 1: Training Dueling DQN
-    console.print(f"\n[bold green]🏋️ [PHASE 1] Training Proposed Dueling DQN for {train_cycles} cycles...[/bold green]")
+    console.print(f"\n[bold green][PHASE 1] Training Proposed Dueling DQN for {train_cycles} cycles...[/bold green]")
     top_path, traffic_configs, rl_config, chaos_config = load_configs(chaos, topology_path)
     dueling_cfg = copy.deepcopy(rl_config)
     dueling_cfg["agent"]["use_dueling"] = True
@@ -529,7 +530,7 @@ def run_custom_train_and_packet_eval(topology_path: str = "configs/topology.yaml
         )
 
     # Train Standard DQN
-    console.print(f"\n[bold green]🏋️ Training Baseline Standard DQN for {train_cycles} cycles...[/bold green]")
+    console.print(f"\n[bold green]Training Baseline Standard DQN for {train_cycles} cycles...[/bold green]")
     std_cfg = copy.deepcopy(rl_config)
     std_cfg["agent"]["use_dueling"] = False
     if scenario_tuple:
@@ -579,7 +580,7 @@ def run_custom_train_and_packet_eval(topology_path: str = "configs/topology.yaml
     q_controller = SimpleNamespace(agent=q_agent)
 
     # Phase 2: Evaluation on exact M packets
-    console.print(f"\n[bold cyan]🧪 [PHASE 2] Evaluating all 4 models on {test_packets:,} test packets...[/bold cyan]")
+    console.print(f"\n[bold cyan][PHASE 2] Evaluating all 4 models on {test_packets:,} test packets...[/bold cyan]")
     dueling_res = evaluate_model_on_packets("dueling_dqn", dueling_controller, test_packets, chaos, custom_scenario=scenario_tuple, topology_path=topology_path)
     std_res = evaluate_model_on_packets("standard_dqn", std_controller, test_packets, chaos, custom_scenario=scenario_tuple, topology_path=topology_path)
     ospf_res = evaluate_model_on_packets("ospf", None, test_packets, chaos, custom_scenario=scenario_tuple, topology_path=topology_path)
@@ -587,7 +588,7 @@ def run_custom_train_and_packet_eval(topology_path: str = "configs/topology.yaml
 
 
     # Phase 3: Display Comparison Results
-    table = Table(title=f"\n🏆 PERFORMANCE COMPARISON ON {test_packets:,} TEST PACKETS ({'CHAOS ACTIVE' if chaos else 'NORMAL'})", border_style="bright_blue")
+    table = Table(title=f"\nPERFORMANCE COMPARISON ON {test_packets:,} TEST PACKETS ({'CHAOS ACTIVE' if chaos else 'NORMAL'})", border_style="bright_blue")
     table.add_column("Evaluation Metric", style="bold yellow")
     table.add_column("Dueling DQN (Proposed)", style="bold green", justify="right")
     table.add_column("Standard DQN", style="bold cyan", justify="right")
@@ -649,7 +650,7 @@ def run_custom_train_and_packet_eval(topology_path: str = "configs/topology.yaml
     # Save diagnostic plots
     dueling_controller.metrics_tracker.set_baselines(ospf_res, None)
     plot_file = dueling_controller.save_dashboard_plots(output_dir="plots", filename=f"eval_{test_packets}_packets.png")
-    console.print(f"\n[bold green]📈 Performance diagnostic plots saved to: [underline]{plot_file}[/underline][/bold green]")
+    console.print(f"\n[bold green]Performance diagnostic plots saved to: [underline]{plot_file}[/underline][/bold green]")
 
 
 TOPOLOGY_CHOICES = {
@@ -674,36 +675,33 @@ def main():
     os.system("clear" if os.name == "posix" else "cls")
     
     banner = Panel.fit(
-        "[bold cyan]⚡ RL-SDN AUTOMATED CONTROL PLANE & PACKET SIMULATOR TUI ⚡[/bold cyan]\n"
-        "[dim]Production-Grade Enhancements: Hierarchical RL | PER | DDQN | Multi-Traffic | Distillation | Curriculum[/dim]",
+        "[bold cyan]RL-SDN AUTOMATED CONTROL PLANE & PACKET SIMULATOR TUI[/bold cyan]\n"
+        "[dim]Routing policy training and network performance comparison[/dim]",
         border_style="bright_blue"
     )
     console.print(banner)
 
     console.print("\n[bold yellow]Select Mode to Run:[/bold yellow]")
-    console.print("  [1] [bold green]Train on N Cycles ➔ Test on M Packets (Custom Comparison)[/bold green]")
+    console.print("  [1] [bold green]Train on N Cycles -> Test on M Packets (Custom Comparison)[/bold green]")
     console.print("  [2] [bold cyan]Full Comparison Benchmark[/bold cyan] (Dueling DQN vs Standard DQN vs OSPF vs Q-learning)")
-    console.print("  [3] [bold magenta]Hierarchical Multi-Agent RL[/bold magenta] (Regional Agents + Global Coordinator)")
-    console.print("  [4] [bold blue]Curriculum Learning[/bold blue] (3 Progressive Difficulty Stages)")
-    console.print("  [5] [bold yellow]Policy Distillation[/bold yellow] (Edge Model Compression Benchmark)")
-    console.print("  [6] [bold green]Transfer Learning[/bold green] (Topology Generalization & Layer Freezing)")
-    console.print("  [7] [bold white]Dueling DQN Agent Only[/bold white]")
-    console.print("  [8] [bold magenta]Standard DQN Agent Only[/bold magenta]")
-    console.print("  [9] [bold blue]Static OSPF (Dijkstra Shortest Path)[/bold blue]")
-    console.print("  [10] [bold yellow]Round-Robin (ECMP Load Balancer)[/bold yellow]")
-    console.print("  [11] [bold red]Train Model & Export ONNX Policy[/bold red]")
-    console.print("  [12] [bold cyan]Run Automated PyTest Suite[/bold cyan]")
-    console.print("  [13] Exit\n")
+    console.print("  [3] [bold white]Dueling DQN Agent Only[/bold white]")
+    console.print("  [4] [bold magenta]Standard DQN Agent Only[/bold magenta]")
+    console.print("  [5] [bold blue]Static OSPF (Dijkstra Shortest Path)[/bold blue]")
+    console.print("  [6] [bold yellow]Round-Robin (ECMP Load Balancer)[/bold yellow]")
+    console.print("  [7] [bold cyan]Run Automated PyTest Suite[/bold cyan]")
+    console.print("  [8] Exit")
 
-    choice = Prompt.ask("Choose option", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"], default="1")
+    visible_choice = Prompt.ask("Choose option", choices=[str(number) for number in range(1, 9)], default="1")
+    choice = {"3": "7", "4": "8", "5": "9", "6": "10", "7": "12", "8": "13"}.get(visible_choice, visible_choice)
     if choice == "13":
         console.print("[yellow]Exiting RL-SDN TUI. Goodbye![/yellow]")
         return
 
     if choice == "12":
-        console.print("\n[bold cyan]🧪 Running Automated Test Suite...[/bold cyan]\n")
-        pytest.main(["tests/", "-v"])
-        return
+        console.print("\n[bold cyan]Running Automated Test Suite...[/bold cyan]\n")
+        with tempfile.TemporaryDirectory(prefix="neuroroute-tests-", dir=os.path.dirname(os.path.abspath(__file__))) as temp_root:
+            result = pytest.main(["tests/", "-v", "--basetemp", os.path.join(temp_root, "pytest")])
+        raise SystemExit(result)
 
     topology_path = choose_topology()
 
@@ -761,7 +759,7 @@ def main():
             )
         from rl_sdn_controller.ai.policy_exporter import export_policy_to_onnx
         export_policy_to_onnx(controller.agent.policy_net, controller.state_dim, onnx_file)
-        console.print(f"[bold green]✅ Model exported to {onnx_file}[/bold green]")
+        console.print(f"[bold green]Model exported to {onnx_file}[/bold green]")
 
 
 

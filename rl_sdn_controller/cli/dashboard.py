@@ -214,7 +214,7 @@ class LiveConsoleDashboard:
         self.console = console or Console()
 
     def render_episode_table(self, stats: Dict[str, Any], baseline_ospf: Optional[Dict[str, Any]] = None) -> Table:
-        table = Table(title="📈 LIVE PERFORMANCE TELEMETRY DASHBOARD", border_style="bright_blue")
+        table = Table(title="LIVE PERFORMANCE TELEMETRY DASHBOARD", border_style="bright_blue")
         table.add_column("Metric", style="bold yellow")
         table.add_column("Current Episode Value", style="bold green", justify="right")
         table.add_column("OSPF Static Baseline", style="bold magenta", justify="right")

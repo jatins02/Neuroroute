@@ -26,7 +26,7 @@ class TerminalVisualizer:
 
     def print_benchmark_table(self, rl_stats: Dict[str, Any], ospf_stats: Dict[str, Any], rr_stats: Dict[str, Any]):
         """Prints comparative table for RL vs OSPF vs Round-Robin baselines."""
-        table = Table(title="📊 PERFORMANCE BENCHMARK COMPARISON", header_style="bold magenta")
+        table = Table(title="PERFORMANCE BENCHMARK COMPARISON", header_style="bold magenta")
         
         table.add_column("Metric", style="bold white", justify="left")
         table.add_column("RL Agent (Proposed)", style="bold green", justify="right")
@@ -63,7 +63,7 @@ class TerminalVisualizer:
 
     def print_link_telemetry_table(self, telemetry: Dict[Any, Any]):
         """Prints detailed per-link telemetry statistics."""
-        table = Table(title="🌐 PER-LINK TELEMETRY METRICS", header_style="bold blue")
+        table = Table(title="PER-LINK TELEMETRY METRICS", header_style="bold blue")
         
         table.add_column("Link (Src -> Dst)", style="bold white")
         table.add_column("Capacity", justify="right")
@@ -77,7 +77,7 @@ class TerminalVisualizer:
             drop_color = "red" if stats.drop_rate_pct > 0.5 else "green"
 
             table.add_row(
-                f"{src} ➔ {dst}",
+                f"{src} -> {dst}",
                 f"{stats.capacity_mbps:.0f} Mbps",
                 f"[{util_color}]{stats.utilization_pct:.1f}%[/{util_color}]",
                 f"{stats.queue_depth} / {stats.max_queue_packets}",
